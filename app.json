@@ -42,6 +42,13 @@
           "color": "#ffffff",
           "defaultChannel": "default"
         }
+      ],
+      "@react-native-firebase/app",
+      [
+        "@react-native-firebase/messaging",
+        {
+          "autolinkingEnabled": true
+        }
       ]
     ],
     "experiments": {

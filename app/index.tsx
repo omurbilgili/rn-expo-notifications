@@ -1,6 +1,7 @@
 import * as Notifications from 'expo-notifications';
 import React, { useEffect, useState } from "react";
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import NotificationService from './services/NotificationService';
 
 // Notification handler configuration
 Notifications.setNotificationHandler({
@@ -13,15 +14,56 @@ Notifications.setNotificationHandler({
 
 export default function Index() {
   const [expoPushToken, setExpoPushToken] = useState<string>('');
+  const [fcmToken, setFcmToken] = useState<string>('');
   const [isScheduled, setIsScheduled] = useState(false);
+  const notificationService = NotificationService.getInstance();
 
   useEffect(() => {
-    registerForPushNotificationsAsync().then(token => {
-      if (token) {
-        setExpoPushToken(token);
-      }
-    });
+    initializeNotifications();
   }, []);
+
+  const initializeNotifications = async () => {
+    // İzinleri al
+    const permissionsGranted = await notificationService.requestPermissions();
+    
+    if (permissionsGranted) {
+      // Expo push token al (local notifications için)
+      const expoToken = await registerForPushNotificationsAsync();
+      if (expoToken) {
+        setExpoPushToken(expoToken);
+      }
+
+      // FCM token al (remote push notifications için)
+      const fcmToken = await notificationService.getFCMToken();
+      if (fcmToken) {
+        setFcmToken(fcmToken);
+        // Token'ı server'a gönder
+        await notificationService.sendTokenToServer(fcmToken);
+      }
+
+      // Background mesaj handler setup
+      notificationService.setupBackgroundMessageHandler();
+
+      // Foreground mesaj listener
+      const unsubscribeForeground = notificationService.setupForegroundMessageListener((message) => {
+        Alert.alert(
+          message.notification?.title || 'Yeni Mesaj',
+          message.notification?.body || 'Size bir mesaj geldi'
+        );
+      });
+
+      // Token refresh listener
+      const unsubscribeTokenRefresh = notificationService.setupTokenRefreshListener(async (newToken) => {
+        setFcmToken(newToken);
+        await notificationService.sendTokenToServer(newToken);
+      });
+
+      return () => {
+        unsubscribeForeground();
+        unsubscribeTokenRefresh();
+      };
+    }
+  };
 
   async function registerForPushNotificationsAsync() {
     let token;
@@ -45,32 +87,47 @@ export default function Index() {
 
   const scheduleNotification = async () => {
     try {
-      // Cancel any existing scheduled notifications
-      await Notifications.cancelAllScheduledNotificationsAsync();
-      
-      // Schedule a new notification for 1 minute later
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: "Zamanlı Bildirim! 🔔",
-          body: "1 dakika önce butona basmıştınız. Uygulama kapalı olsa da bildirim geldi!",
-          data: { scheduledAt: new Date().toISOString() },
-        },
-        trigger: {
-          seconds: 60, // 1 minute = 60 seconds
-        },
-      });
-
-      setIsScheduled(true);
-      Alert.alert(
-        'Bildirim Zamanlandı', 
-        '1 dakika sonra size bildirim gelecek. Uygulamayı kapatabilirsiniz.',
-        [
-          {
-            text: 'Tamam',
-            onPress: () => console.log('Notification scheduled for 1 minute')
-          }
-        ]
+      // Remote push notification ile zamanlama (gerçek push notification)
+      const success = await notificationService.scheduleRemoteNotification(
+        60, // 1 dakika
+        "Gerçek Push Notification! 🔔",
+        "1 dakika önce butona basmıştınız. Uygulama tamamen kapalı olsa da bu bildirim geldi!",
+        { scheduledAt: new Date().toISOString(), type: 'remote_scheduled' }
       );
+
+      if (success) {
+        setIsScheduled(true);
+        Alert.alert(
+          'Remote Push Notification Zamanlandı', 
+          '1 dakika sonra size gerçek push notification gelecek. Uygulamayı kapatabilir, hatta telefonu yeniden başlatabilirsiniz!',
+          [
+            {
+              text: 'Tamam',
+              onPress: () => console.log('Remote notification scheduled for 1 minute')
+            }
+          ]
+        );
+      } else {
+        // Fallback: Local notification
+        await Notifications.cancelAllScheduledNotificationsAsync();
+        
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: "Local Bildirim (Fallback) 📱",
+            body: "Remote push başarısız oldu. Bu local bildirim, sadece uygulama yüklü ise çalışır.",
+            data: { scheduledAt: new Date().toISOString(), type: 'local_fallback' },
+          },
+          trigger: {
+            seconds: 60,
+          },
+        });
+
+        setIsScheduled(true);
+        Alert.alert(
+          'Local Bildirim Zamanlandı (Fallback)', 
+          'Remote push notification kurulamadı. Local bildirim zamanlandı.',
+        );
+      }
     } catch (error) {
       console.error('Error scheduling notification:', error);
       Alert.alert('Hata', 'Bildirim zamanlanırken bir hata oluştu.');
@@ -112,7 +169,16 @@ export default function Index() {
       )}
 
       <Text style={styles.tokenText}>
-        Push Token: {expoPushToken ? 'Alındı ✅' : 'Yükleniyor...'}
+        Expo Token: {expoPushToken ? 'Alındı ✅' : 'Yükleniyor...'}
+      </Text>
+      
+      <Text style={styles.tokenText}>
+        FCM Token: {fcmToken ? 'Alındı ✅' : 'Yükleniyor...'}
+      </Text>
+      
+      <Text style={styles.infoText}>
+        💡 FCM Token ile gerçek push notification alabilirsiniz.
+        Uygulama tamamen kapalı olsa bile bildirim gelir!
       </Text>
     </View>
   );
@@ -165,5 +231,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#999',
     marginTop: 20,
+  },
+  infoText: {
+    fontSize: 14,
+    color: '#007AFF',
+    marginTop: 15,
+    textAlign: 'center',
+    fontStyle: 'italic',
   },
 });
